@@ -874,10 +874,21 @@ def predict_2025_election(
     # Create results dataframe
     results = []
     for i, (pred, prob, conf, meta) in enumerate(zip(all_preds, all_probs, all_conf, all_meta)):
+        # Handle meta - could be dict or tuple from DataLoader
+        if isinstance(meta, dict):
+            ward_id = meta.get('ward_id', f'ward_{i}')
+            district = meta.get('district', '')
+            body_type = meta.get('body_type', '')
+        else:
+            # DataLoader may return individual values
+            ward_id = f'ward_{i}'
+            district = str(meta) if meta else ''
+            body_type = 'Grama Panchayat'
+        
         results.append({
-            'ward_id': meta.get('ward_id', f'ward_{i}'),
-            'district': meta.get('district', ''),
-            'body_type': meta.get('body_type', ''),
+            'ward_id': ward_id,
+            'district': district,
+            'body_type': body_type,
             'predicted_winner': config.parties[pred],
             'confidence': float(conf),
             'LDF_prob': float(prob[0]),
