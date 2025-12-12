@@ -207,61 +207,84 @@ class ElectionDataset(Dataset):
         return np.array(features_list), np.array(labels_list), meta_list
     
     def _predict_2025_swing(self, row, sentiment) -> str:
-        """Improved swing prediction with realistic probabilities"""
+        """
+        DETERMINISTIC swing prediction for consistent labels
+        Uses weighted scoring instead of random sampling
+        """
         
         winner_2020 = row['winner_2020']
         winner_2015 = row['winner_2015']
         ls2024_winner = row['ls2024_winner']
         district = row['district']
+        margin = row['margin_2020']
         
-        # Start with base probabilities
-        probs = {"LDF": 0.25, "UDF": 0.25, "NDA": 0.25, "OTHERS": 0.25}
+        # Start with scores
+        scores = {"LDF": 0.0, "UDF": 0.0, "NDA": 0.0, "OTHERS": 0.0}
         
-        # 2020 winner gets strong boost
-        probs[winner_2020] += 0.35
+        # 2020 winner gets strong boost (base retention)
+        scores[winner_2020] += 5.0
+        
+        # Margin bonus (stronger wins = more likely to retain)
+        if margin > 0.15:
+            scores[winner_2020] += 2.0
+        elif margin > 0.10:
+            scores[winner_2020] += 1.0
+        elif margin < 0.05:
+            scores[winner_2020] -= 1.0  # Close race = swing possible
         
         # Double incumbency bonus
         if winner_2020 == winner_2015:
-            probs[winner_2020] += 0.15
+            scores[winner_2020] += 1.5
+        else:
+            # 2020 was already a swing, less likely to swing again
+            scores[winner_2020] += 0.5
         
-        # LS 2024 momentum
-        probs[ls2024_winner] += 0.20
+        # LS 2024 momentum (key factor!)
+        scores[ls2024_winner] += 2.5
         
-        # Anti-incumbency (LDF ruling since 2016)
-        probs["LDF"] -= 0.08
-        probs["UDF"] += 0.08
+        # Anti-incumbency for LDF (ruling since 2016)
+        scores["LDF"] -= 0.8
+        scores["UDF"] += 0.6
         
-        # Sentiment adjustment
+        # Sentiment from social media
         for party, data in sentiment.items():
-            probs[party] += data.get('score', 0) * 0.3
+            scores[party] += data.get('score', 0) * 2.0
         
-        # District-specific adjustments
+        # District-specific adjustments (strong predictors)
         district_bias = {
-            "Malappuram": {"UDF": 0.25, "LDF": -0.15},
-            "Kannur": {"LDF": 0.20, "UDF": -0.10},
-            "Thrissur": {"NDA": 0.15, "LDF": -0.05},
-            "Pathanamthitta": {"UDF": 0.15},
-            "Kottayam": {"UDF": 0.15},
-            "Idukki": {"UDF": 0.10},
-            "Kollam": {"LDF": 0.10},
-            "Alappuzha": {"LDF": 0.10},
-            "Kozhikode": {"LDF": 0.08},
-            "Palakkad": {"NDA": 0.08},
+            "Malappuram": {"UDF": 3.0, "LDF": -1.5, "NDA": -2.0},  # Strong IUML
+            "Kannur": {"LDF": 3.0, "UDF": -1.5},  # CPM stronghold
+            "Thrissur": {"NDA": 2.5, "LDF": -0.5},  # LS 2024 NDA win
+            "Palakkad": {"NDA": 1.5},
+            "Pathanamthitta": {"UDF": 2.0},  # Christian majority
+            "Kottayam": {"UDF": 2.0},  # Christian majority
+            "Idukki": {"UDF": 1.5},
+            "Kollam": {"LDF": 1.5},
+            "Alappuzha": {"LDF": 1.5},
+            "Kozhikode": {"LDF": 1.2},
+            "Thiruvananthapuram": {"NDA": 0.8},  # Urban NDA
+            "Kasaragod": {"NDA": 1.0},
         }
         
         if district in district_bias:
             for party, delta in district_bias[district].items():
-                probs[party] += delta
+                scores[party] += delta
         
-        # Ensure minimum probabilities
-        for party in probs:
-            probs[party] = max(0.02, probs[party])
+        # Urban areas favor NDA slightly
+        if row['urban_pct'] > 60:
+            scores["NDA"] += 0.5
         
-        # Normalize
-        total = sum(probs.values())
-        probs = {k: v/total for k, v in probs.items()}
+        # High Muslim areas favor UDF (IUML)
+        if row['muslim_pct'] > 40:
+            scores["UDF"] += 2.0
+            scores["NDA"] -= 1.0
         
-        return np.random.choice(list(probs.keys()), p=list(probs.values()))
+        # High Christian areas favor UDF
+        if row['christian_pct'] > 30:
+            scores["UDF"] += 1.5
+        
+        # DETERMINISTIC: Return party with highest score
+        return max(scores, key=scores.get)
     
     def __len__(self):
         return len(self.labels)
@@ -719,7 +742,7 @@ def main():
     model, history = train(model, train_loader, val_loader, config, dataset.class_weights)
     
     # Load best model
-    checkpoint = torch.load('checkpoints/best_model.pt')
+    checkpoint = torch.load('checkpoints/best_model.pt', weights_only=False)
     model.load_state_dict(checkpoint['model_state'])
     
     # Predict
